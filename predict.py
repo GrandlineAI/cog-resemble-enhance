@@ -6,6 +6,8 @@ import torch
 import torchaudio
 from typing import List
 from resemble.resemble_enhance.enhancer.inference import denoise, enhance
+import subprocess
+ffmpeg = "/usr/local/bin/ffmpeg"
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
@@ -14,7 +16,7 @@ class Predictor(BasePredictor):
 
     def predict(
         self,
-        input_audio: Path = Input(description="Input audio file"),
+        input_file: Path = Input(description="Input video/audio file"),
         solver: str = Input(
             description="Solver to use",
             default="Midpoint",
@@ -43,7 +45,20 @@ class Predictor(BasePredictor):
         nfe = int(number_function_evaluations)
         lambd = 0.9 if denoise_flag else 0.1
 
-        dwav, sr = torchaudio.load(str(input_audio))
+        # Run ffprobe command to get the file information
+        result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", str(input_file)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        # Check if the file is a video file
+        if result.stdout:
+            print("This is a video file.")
+            # Separate the video to audio and video
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_file), "-vn", "-acodec", "copy", "output.m4a"])
+            subprocess.run(["ffmpeg", "-y", "-i", str(input_file), "-an", "-vcodec", "copy", "output.mp4"])
+            dwav, sr = torchaudio.load(str("output.m4a"))
+        else:
+            print("This is an audio file.")
+            dwav, sr = torchaudio.load(str(input_file))
+
         dwav = dwav.mean(dim=0)
 
         wav1, new_sr1 = denoise(dwav, sr, device)
@@ -59,5 +74,17 @@ class Predictor(BasePredictor):
         torchaudio.save(output_path2, wav2, new_sr2)
         outputs.append(Path(output_path1))
         outputs.append(Path(output_path2))
+
+        # If the file is a video file, merge the video and the audio
+        if result.stdout:
+            # Merge the video and the denoised audio
+            subprocess.run(["ffmpeg", "-y", "-i", "output.mp4", "-i", output_path1, "-c:v", "copy", "-c:a", "aac", "output-denoised.mp4"])
+
+            # Merge the video and the enhanced audio
+            subprocess.run(["ffmpeg", "-y", "-i", "output.mp4", "-i", output_path2, "-c:v", "copy", "-c:a", "aac", "output-enhanced.mp4"])
+
+            # Append the paths to the output files
+            outputs.append(Path("output-denoised.mp4"))
+            outputs.append(Path("output-enhanced.mp4"))
 
         return outputs
